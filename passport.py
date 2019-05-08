@@ -1,6 +1,7 @@
 from PIL import Image
 import pdf2image
 import imutils
+from imutils import contours
 from pytesseract import image_to_string
 import cv2
 import os
@@ -51,31 +52,197 @@ def cut_passport(image):
 
     # Cutting the image so only passport was left
     (x, y, w, h) = face[0]
-    image = image[y - 6 * h: y + 3 * h, x - w:x + 6 * w]
+
+    output = image.copy()
+    cv2.rectangle(output, (x, y), (x + w, y + h),
+                  (0, 0, 255), 2)
+
+    """
+    cv2.imshow('Output', output)
+    cv2.waitKey(0)
+    """
+
+    (H, W, _) = image.shape
+
+    if y - int(6 * h) < 0:
+        startY = 0
+    else:
+        startY = y - int(6 * h)
+
+    if y + 3 * h > H:
+        endY = H
+    else:
+        endY = y + 3 * h
+
+    if x - w < 0:
+        startX = 0
+    else:
+        startX = x - w
+
+    if x + 6 * w > W:
+        endX = W
+    else:
+        endX = x + 6 * w
+
+    image = image[startY:endY, startX:endX]
+
+    """
+    cv2.imshow('Image', image)
+    cv2.waitKey(0)
+    """
 
     return image
 
 
-def read_text_from_box(image):
+def skew_text_correction(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.bitwise_not(gray)
+
+    thresh = cv2.threshold(gray, 0, 255,
+                           cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+    """
+    cv2.imshow('Thresh', thresh)
+    cv2.waitKey(0)
+    """
+
+    coords = np.column_stack(np.where(thresh > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+
+    if angle < -45:
+        angle = -(90 + angle)
+
+    else:
+        angle = -angle
+
+    (h, w) = image.shape[:2]
+    center = (w // 2, h // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated = cv2.warpAffine(image, M, (w, h),
+                             flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+    """
+    cv2.imshow("Input", image)
+    cv2.imshow("Rotated", rotated)
+    cv2.waitKey(0)
+    """
+
+    return rotated
+
+
+def locate_text(image, type_):
+    if type_ == 'top':
+        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 3))
+    elif type_ == 'bottom':
+        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+
+    sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 12))
+
+    # image = imutils.resize(image, width=300)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    tophat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKernel)
+
+    """
+    cv2.imshow('Tophat', tophat)
+    cv2.waitKey(0)
+    """
+
+    gradX = cv2.Sobel(tophat, ddepth=cv2.CV_32F, dx=1, dy=0,
+                      ksize=-1)
+    gradX = np.absolute(gradX)
+    (minVal, maxVal) = (np.min(gradX), np.max(gradX))
+    gradX = (255 * ((gradX - minVal) / (maxVal - minVal)))
+    gradX = gradX.astype("uint8")
+
+    """
+    cv2.imshow('Gradient', gradX)
+    cv2.waitKey(0)
+    """
+
+    gradX = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, rectKernel)
+    thresh = cv2.threshold(gradX, 0, 255,
+                           cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, sqKernel)
+
+    p = int(image.shape[1] * 0.05)
+    thresh[:, 0:p] = 0
+    thresh[:, image.shape[1] - p:] = 0
+
+    """
+    cv2.imshow('Thresh', thresh)
+    cv2.waitKey(0)
+    """
+
+    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
+                            cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    locs = []
+
+    for (i, c) in enumerate(cnts):
+        (x, y, w, h) = cv2.boundingRect(c)
+        ar = w / float(h)
+
+        if w > 10 and h > 10 and ar > 2.5:
+            locs.append((x, y, w, h))
+
+    locs = sorted(locs, key=lambda x: x[0])
+    output = []
+    text = ''
+
+    for (i, (gX, gY, gW, gH)) in enumerate(locs):
+        groupOutput = []
+
+        group = gray[gY - 5:gY + gH + 5, gX - 5:gX + gW + 5]
+        group = cv2.threshold(group, 0, 255,
+                              cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+        digitCnts = cv2.findContours(group.copy(), cv2.RETR_EXTERNAL,
+                                     cv2.CHAIN_APPROX_SIMPLE)
+        digitCnts = imutils.grab_contours(digitCnts)
+        digitCnts = contours.sort_contours(digitCnts,
+                                           method="left-to-right")[0]
+
+        """
+        cv2.rectangle(image, (gX - 5, gY - 5),
+                        (gX + gW + 5, gY + gH + 5), (0, 0, 255), 2)
+        """
+
+        text += read_text_from_box(image, gX - 5, gY - 5,
+                                   gX + gW + 5, gY + gH + 5) + ' '
+
+        """
+        cv2.imshow('ROI', image)
+        cv2.waitKey(0)
+        """
+
+    return text
+
+
+def read_text_from_box(image, startX, startY, endX, endY):
     """
     Reading text from bounding box
     :param image: np array
     :return: string
     """
 
-    gray = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2GRAY)
+    box = image[startY:endY, startX: endX]
 
-    kernel = np.ones((1, 1), np.uint8)
-    gray = cv2.dilate(gray, kernel, iterations=1)
-    gray = cv2.erode(gray, kernel, iterations=1)
+    """
+    cv2.imshow('ROI', box)
+    cv2.waitKey(0)
+    """
 
-    blurred = cv2.GaussianBlur(gray.copy(), (5, 5), 0)
-    thresh = cv2.threshold(blurred, 0, 225,
+    box = cv2.resize(box, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+    gray = cv2.cvtColor(box.copy(), cv2.COLOR_BGR2GRAY)
+
+    blurred = cv2.medianBlur(gray, 1)
+    thresh = cv2.threshold(blurred.copy(), 0, 225,
                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
-    text = image_to_string(thresh, lang='rus').replace('\n', ' ')
-
-    return text
+    return image_to_string(thresh, lang='rus').replace('\n', ' ')
 
 
 def procces_passport(top, bottom, number):

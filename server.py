@@ -35,21 +35,22 @@ def handle_passport(image):
     """
 
     # Preprocessing
+    image = imutils.resize(image, width=1000)
     image = passport.rotate_passport(image)
     image = passport.cut_passport(image)
+    image = passport.skew_text_correction(image)
 
     # Cutting passport into parts and reading these
     (h, w, _) = image.shape
     box = image[int(h / 2):h, int(w / 3):w]
-    bottom = passport.read_text_from_box(box)
+    bottom = passport.locate_text(box, type_='bottom')
 
-    box = image[0:int(h/3), 0:w]
-    top = passport.read_text_from_box(box)
+    box = image[0:int(h / 3), 0:w]
+    top = passport.locate_text(box, type_='top')
 
-    image = imutils.rotate_bound(image, -90)
-    (h, w, _) = image.shape
-    box = image[0:int(h / 10), 0:w]
-    number = passport.read_text_from_box(box)
+    image_ = imutils.rotate_bound(image, -90)
+    (h, w, _) = image_.shape
+    number = passport.read_text_from_box(image_, 0, 0, w, int(h / 10))
 
     # Processing the text
     responce = passport.procces_passport(top, bottom, number)
