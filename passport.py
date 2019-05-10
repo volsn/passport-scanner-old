@@ -178,6 +178,9 @@ def locate_text(image, type_):
     cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
                             cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
+    cnts = contours.sort_contours(cnts,
+                    method="top-to-bottom")[0]
+
     locs = []
 
     for (i, c) in enumerate(cnts):
@@ -187,7 +190,6 @@ def locate_text(image, type_):
         if w > 10 and h > 10 and ar > 2.5:
             locs.append((x, y, w, h))
 
-    locs = sorted(locs, key=lambda x: x[0])
     output = []
     text = ''
 
@@ -198,11 +200,6 @@ def locate_text(image, type_):
         group = cv2.threshold(group, 0, 255,
                               cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
 
-        digitCnts = cv2.findContours(group.copy(), cv2.RETR_EXTERNAL,
-                                     cv2.CHAIN_APPROX_SIMPLE)
-        digitCnts = imutils.grab_contours(digitCnts)
-        digitCnts = contours.sort_contours(digitCnts,
-                                           method="left-to-right")[0]
 
         """
         cv2.rectangle(image, (gX - 5, gY - 5),
