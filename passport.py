@@ -95,6 +95,7 @@ def cut_passport(image):
 
 
 def skew_text_correction(image):
+
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray = cv2.bitwise_not(gray)
 
@@ -131,9 +132,11 @@ def skew_text_correction(image):
 
 
 def locate_text(image, type_):
+    image = image.copy()
+
     if type_ == 'top':
         rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 3))
-    elif type_ == 'bottom':
+    elif type_ == 'bottom' or type_ == 'number':
         rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
 
     sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 12))
@@ -179,19 +182,26 @@ def locate_text(image, type_):
                             cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
     cnts = contours.sort_contours(cnts,
-                    method="top-to-bottom")[0]
-
+                                  method="top-to-bottom")[0]
     locs = []
 
     for (i, c) in enumerate(cnts):
         (x, y, w, h) = cv2.boundingRect(c)
         ar = w / float(h)
 
-        if w > 10 and h > 10 and ar > 2.5:
-            locs.append((x, y, w, h))
+        if type_ != 'number':
+            if w > 10 and h > 10 and ar > 2.5:
+                locs.append((x, y, w, h))
+        else:
+            if w > 10 and h > 10:
+                locs.append((x, y, w, h))
+
+    # locs = sorted(locs, key=lambda x:x[0])
 
     output = []
     text = ''
+
+    (h, w, _) = image.shape
 
     for (i, (gX, gY, gW, gH)) in enumerate(locs):
         groupOutput = []
@@ -199,7 +209,6 @@ def locate_text(image, type_):
         group = gray[gY - 5:gY + gH + 5, gX - 5:gX + gW + 5]
         group = cv2.threshold(group, 0, 255,
                               cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-
 
         """
         cv2.rectangle(image, (gX - 5, gY - 5),
@@ -242,7 +251,7 @@ def read_text_from_box(image, startX, startY, endX, endY):
     return image_to_string(thresh, lang='rus').replace('\n', ' ')
 
 
-def procces_passport(top, bottom, number):
+def procces_passport(full_name, top, bottom, number):
     """
     Classifing data for given passport photo
     :param top: string
@@ -270,48 +279,37 @@ def procces_passport(top, bottom, number):
     }
 
     # Looking for issue code
-    code = re.search(r'\d{3}-\d{3}', top)
+    code = re.search(r' \d{3}.{1,3}\d{3} ', top)
     if code is not None:
         passport['ocr_result']['issue_code'] = code[0]
 
     # Looking for issue authority
 
-    AUTHORITIES = ['отделом', 'УФМС', 'МФЦ']
-
-    for auth in AUTHORITIES:
-        if re.search(auth, top, flags=re.I) is not None:
-
-            issued = re.search(r'{}.*'.format(auth), top, flags=re.I)[0].split(' ')
-            authority = ''
-            for i in issued:
-                if all(c.isupper() or c == '-' or c == '.' for c in i):
-                    authority += i + ' '
-
-            passport['ocr_result']['issue_authority'] = authority
+    passport['ocr_result']['issue_authority'] = re.search(r'(.*)\d\d\d', top)[0]
 
     # Looking for issue date
-    date = re.search(r'\d{2}\.\d{2}\.\d{4}', top)
+    date = re.search(r'\d{2}.{1,3}\d{2}.{1,3}\d{4}', top)
     if date is not None:
         passport['ocr_result']['issue_date'] = date[0]
 
     # Looking for name
-    full_name = re.search(r'(.*(ВИЧ|ВНА))', bottom, flags=re.I)
 
+    full_name.split()
     name = []
-    if full_name is not None:
-        full_name = full_name[0].split(' ')
+    for f in full_name.split():
+        if all(c.isalpha() for c in f):
+            name.append(f)
 
-        for n in full_name:
-            if all(c.isupper() for c in n) and len(n) > 3:
-                name.append(n)
+    if len(name) < 3:
+        for _ in range(3 - len(name)):
+            name = [' '] + name
 
-        if len(name) >= 3:
-            passport['ocr_result']['patronymic_name'] = name[-1]
-            passport['ocr_result']['name'] = name[-2]
-            passport['ocr_result']['surname'] = name[-3]
+    passport['ocr_result']['patronymic_name'] = name[-1]
+    passport['ocr_result']['name'] = name[-2]
+    passport['ocr_result']['surname'] = name[-3]
 
     # Looking for birth date
-    date = re.search(r'\d{2}\.\d{2}\.\d{4}', bottom)
+    date = re.search(r'\d{2}\.*\d{2}\.*\d{4}', bottom)
     if date is not None:
         passport['ocr_result']['birth_date'] = date[0]
 
@@ -329,14 +327,14 @@ def procces_passport(top, bottom, number):
     genders = ['МУЖ', 'МУЖ.', 'ЖЕН', 'ЖЕН.']
     birth_place = ''
     for word in bottom.split():
-        if all(c.isupper() or c == '.' for c in word) and word not in name \
+        if all(c.isalpha() or c == '.' for c in word) and word not in name \
                 and word not in genders and len(word) > 2:
             birth_place += word + ' '
     passport['ocr_result']['birth_place'] = birth_place
 
     # Looking for passport series
 
-    series = re.search(r'(\d{2} \d{2})', number)
+    series = re.search(r'(\d{2} {1,3}\d{2})', number)
     if series is not None:
         passport['ocr_result']['series'] = series[0]
 

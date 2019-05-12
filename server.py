@@ -42,20 +42,25 @@ def handle_passport(image):
 
     # Cutting passport into parts and reading these
     (h, w, _) = image.shape
-    box = image[int(h / 2):h, int(w / 3):w]
-    bottom = passport.locate_text(box, type_='bottom')
+    basic_box = image[int(h / 2):h, int(w / 3):w]
 
-    box = image[0:int(h / 3), 0:w]
+    (h, w, _) = basic_box.shape
+    box = basic_box[0:int(h / 2), 0:w]
+    full_name = passport.locate_text(box, type_='bottom')
+    bottom = passport.locate_text(basic_box, type_='bottom')
+
+    (h, w, _) = image.shape
+    box = image[0:int(h / 2), 0:w]
     top = passport.locate_text(box, type_='top')
 
-    image_ = imutils.rotate_bound(image, -90)
+    image_ = imutils.rotate_bound(box, -90)
     (h, w, _) = image_.shape
     number = passport.read_text_from_box(image_, 0, 0, w, int(h / 10))
 
     # Processing the text
-    responce = passport.procces_passport(top, bottom, number)
+    responce = passport.procces_passport(full_name, top, bottom, number)
     return responce
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
