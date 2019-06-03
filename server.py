@@ -6,6 +6,7 @@ from flask import render_template, Flask, request, make_response
 import passport
 import json
 import os
+from pytesseract import image_to_string
 
 app = Flask(__name__)
 DEBUG = True
@@ -35,30 +36,24 @@ def handle_passport(image):
     """
 
     # Preprocessing
-    image = imutils.resize(image, width=1000)
     image = passport.rotate_passport(image)
     image = passport.cut_passport(image)
-    image = passport.skew_text_correction(image)
 
     # Cutting passport into parts and reading these
     (h, w, _) = image.shape
-    basic_box = image[int(h / 2):h, int(w / 3):w]
+    top = image[0:int(h/2), 0:w]
+    name = image[int(h/2 + h/20):int(h-h/4),int(w/3):w]
+    bottom = image[int(h/2): h, 0:w]
 
-    (h, w, _) = basic_box.shape
-    box = basic_box[0:int(h / 2), 0:w]
-    full_name = passport.locate_text(box, type_='bottom')
-    bottom = passport.locate_text(basic_box, type_='bottom')
-
-    (h, w, _) = image.shape
-    box = image[0:int(h / 2), 0:w]
-    top = passport.locate_text(box, type_='top')
-
-    image_ = imutils.rotate_bound(box, -90)
-    (h, w, _) = image_.shape
-    number = passport.read_text_from_box(image_, 0, 0, w, int(h / 10))
+    number = passport.read_passport_number(image)
+    full_name = passport.find_person_name(name)
+    bottom = image_to_string(bottom, lang='rus')
+    top = image_to_string(top, lang='rus')
 
     # Processing the text
     responce = passport.procces_passport(full_name, top, bottom, number)
+    #responce['mrz'] = passport.read_passport_mrz(image)
+
     return responce
 
 

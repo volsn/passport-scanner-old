@@ -1,5 +1,4 @@
 from PIL import Image
-import pdf2image
 import imutils
 from imutils import contours
 from pytesseract import image_to_string
@@ -18,7 +17,8 @@ def rotate_passport(image):
 
     # Initializing cascade
     cascade = cv2.CascadeClassifier('cascade.xml')
-    gray = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2GRAY)
+    image = imutils.resize(image.copy(), width=1000)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     rotates = 0
     # Looking for a face
@@ -33,65 +33,13 @@ def rotate_passport(image):
         rotates += 1
 
     # Return false if the given picture is not a passport
-    return False
+    return imutils.rotate_bound(image, 90)
 
 
-def cut_passport(image):
-    """
-    Cutting an image so only passport was left
-    :param image: np array
-    :return: np array
-    """
-
-    # Initializing cascade
-    cascade = cv2.CascadeClassifier('cascade.xml')
-    gray = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2GRAY)
-
-    # Finding a face
-    face = cascade.detectMultiScale(gray, 1.3, 5)
-
-    # Cutting the image so only passport was left
-    (x, y, w, h) = face[0]
-
-    output = image.copy()
-    cv2.rectangle(output, (x, y), (x + w, y + h),
-                  (0, 0, 255), 2)
-
-    """
-    cv2.imshow('Output', output)
-    cv2.waitKey(0)
-    """
-
-    (H, W, _) = image.shape
-
-    if y - int(6 * h) < 0:
-        startY = 0
-    else:
-        startY = y - int(6 * h)
-
-    if y + 3 * h > H:
-        endY = H
-    else:
-        endY = y + 3 * h
-
-    if x - w < 0:
-        startX = 0
-    else:
-        startX = x - w
-
-    if x + 6 * w > W:
-        endX = W
-    else:
-        endX = x + 6 * w
-
-    image = image[startY:endY, startX:endX]
-
-    """
-    cv2.imshow('Image', image)
-    cv2.waitKey(0)
-    """
-
-    return image
+def get_segment_crop(img,tol=0, mask=None):
+    if mask is None:
+        mask = img > tol
+    return img[np.ix_(mask.any(1), mask.any(0))]
 
 
 def skew_text_correction(image):
@@ -131,114 +79,65 @@ def skew_text_correction(image):
     return rotated
 
 
-def locate_text(image, type_):
-    image = image.copy()
+def cut_passport(image):
+    """
+    Cutting an image so only passport was left
+    :param image: np array
+    :return: np array
+    """
 
-    if type_ == 'top':
-        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (20, 3))
-    elif type_ == 'bottom' or type_ == 'number':
-        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-
-    sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 12))
-
-    # image = imutils.resize(image, width=300)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    tophat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKernel)
+    gray = cv2.GaussianBlur(gray, (1, 1), 0)
+    edged = cv2.Canny(gray, 75, 200)
 
-    """
-    cv2.imshow('Tophat', tophat)
-    cv2.waitKey(0)
-    """
+    rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 50))
+    edged = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, rectKernel)
 
-    gradX = cv2.Sobel(tophat, ddepth=cv2.CV_32F, dx=1, dy=0,
-                      ksize=-1)
-    gradX = np.absolute(gradX)
-    (minVal, maxVal) = (np.min(gradX), np.max(gradX))
-    gradX = (255 * ((gradX - minVal) / (maxVal - minVal)))
-    gradX = gradX.astype("uint8")
-
-    """
-    cv2.imshow('Gradient', gradX)
-    cv2.waitKey(0)
-    """
-
-    gradX = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, rectKernel)
-    thresh = cv2.threshold(gradX, 0, 255,
-                           cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
-
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, sqKernel)
-
-    p = int(image.shape[1] * 0.05)
-    thresh[:, 0:p] = 0
-    thresh[:, image.shape[1] - p:] = 0
-
-    """
-    cv2.imshow('Thresh', thresh)
-    cv2.waitKey(0)
-    """
-
-    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
-                            cv2.CHAIN_APPROX_SIMPLE)
+    cnts = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
-    cnts = contours.sort_contours(cnts,
-                                  method="top-to-bottom")[0]
-    locs = []
+    cnts = sorted(cnts, key = cv2.contourArea, reverse = True)[:5]
+    hullImage = np.zeros(gray.shape[:2], dtype="uint8")
 
+    max_area = 0
     for (i, c) in enumerate(cnts):
-        (x, y, w, h) = cv2.boundingRect(c)
-        ar = w / float(h)
 
-        if type_ != 'number':
-            if w > 10 and h > 10 and ar > 2.5:
-                locs.append((x, y, w, h))
-        else:
-            if w > 10 and h > 10:
-                locs.append((x, y, w, h))
+        area = cv2.contourArea(c)
 
-    # locs = sorted(locs, key=lambda x:x[0])
+        if area > max_area:
 
-    output = []
-    text = ''
+            max_area = area
 
-    (h, w, _) = image.shape
+            (x, y, w, h) = cv2.boundingRect(c)
 
-    for (i, (gX, gY, gW, gH)) in enumerate(locs):
-        groupOutput = []
+            aspectRatio = w / float(h)
 
-        group = gray[gY - 5:gY + gH + 5, gX - 5:gX + gW + 5]
-        group = cv2.threshold(group, 0, 255,
-                              cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+            extent = area / float(w * h)
 
-        """
-        cv2.rectangle(image, (gX - 5, gY - 5),
-                        (gX + gW + 5, gY + gH + 5), (0, 0, 255), 2)
-        """
+            hull = cv2.convexHull(c)
+            hullArea = cv2.contourArea(hull)
 
-        text += read_text_from_box(image, gX - 5, gY - 5,
-                                   gX + gW + 5, gY + gH + 5) + ' '
+            solidity = area / float(hullArea)
 
-        """
-        cv2.imshow('ROI', image)
-        cv2.waitKey(0)
-        """
 
-    return text
+            output = image.copy()
+            cv2.drawContours(output, [c], -1, (240, 0, 159), 3)
+
+
+    cv2.drawContours(hullImage, [hull], -1, 255, -1)
+    masked = cv2.bitwise_and(image, image, mask=hullImage)
+    croped = get_segment_crop(image, mask=hullImage)
+    croped = skew_text_correction(croped)
+
+    return croped
+
+
+def parse_name(full_name):
+    return None
 
 
 def read_text_from_box(image, startX, startY, endX, endY):
-    """
-    Reading text from bounding box
-    :param image: np array
-    :return: string
-    """
 
     box = image[startY:endY, startX: endX]
-
-    """
-    cv2.imshow('ROI', box)
-    cv2.waitKey(0)
-    """
 
     box = cv2.resize(box, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
@@ -249,6 +148,176 @@ def read_text_from_box(image, startX, startY, endX, endY):
                            cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
 
     return image_to_string(thresh, lang='rus').replace('\n', ' ')
+
+
+def find_person_name(ROI):
+
+    bottom = ROI.copy()
+
+    gray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY)
+    edged = cv2.Canny(gray, 75, 200)
+
+    rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 5))
+    edged = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, rectKernel)
+
+    edged = cv2.erode(edged, (25, 25), iterations=2)
+    edged = cv2.dilate(edged, (25, 25), iterations=2)
+
+    cnts = cv2.findContours(edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    cnts = contours.sort_contours(cnts,
+                        method="top-to-bottom")[0]
+    hullImage = np.zeros(gray.shape[:2], dtype="uint8")
+
+    full_name = []
+    for (i, c) in enumerate(cnts):
+        (x, y, w, h) = cv2.boundingRect(c)
+        ar = w / h
+
+        if w > 100 and h > 100 and ar > 2.5:
+
+            output = bottom.copy()
+
+            full_name.append(image_to_string(output[y:y+h,x:x+w], lang='rus').replace('\n', ' '))
+
+    result = []
+
+    if len(full_name) >= 3:
+        result.append([re.sub(r'[^а-яА-Я]+', '', f) for f in full_name
+                        if f != '' and f is not None][:3])
+
+    else:
+        full_name = image_to_string(bottom, lang='rus')
+        result.append(full_name)
+
+    return full_name
+
+
+def read_passport_number(image, show_steps=False):
+    """
+    Function for reading passport numbers by finding red zones
+    :image: np.array
+    :show_steps: bool
+    :rtype: string
+    """
+
+    # Rotating the image
+    image = imutils.rotate_bound(image, -90)
+    number = ''
+
+    if show_steps:
+        cv2.imshow('Bottom', image)
+        cv2.waitKey(0)
+
+
+    # Creaing and aplying red mask on the image
+    img_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_red = np.array([0,50,50])
+    upper_red = np.array([10,255,255])
+    mask = cv2.inRange(img_hsv, lower_red, upper_red)
+    masked = cv2.bitwise_and(image, image, mask=mask)
+
+    if show_steps:
+        cv2.imshow('Masked', masked)
+        cv2.waitKey(0)
+
+
+    # Deleting tresh
+    kernel = np.ones((5, 5), np.uint8)
+    masked = cv2.dilate(masked, kernel, iterations=3)
+
+    if show_steps:
+        cv2.imshow('Dilate', masked)
+        cv2.waitKey(0)
+
+
+    # Closing gaps betweeen letters
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 30))
+    closed = cv2.morphologyEx(masked, cv2.MORPH_CLOSE, kernel)
+
+    if show_steps:
+        cv2.imshow('Closed', closed)
+        cv2.waitKey(0)
+
+
+    # Finding image contours
+    closed = cv2.cvtColor(closed, cv2.COLOR_HSV2BGR)
+    closed = cv2.cvtColor(closed, cv2.COLOR_BGR2GRAY)
+
+    """
+    cnts = cv2.findContours(closed.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    cnts = contours.sort_contours(cnts,
+                    method="top-to-bottom")[0]
+
+    # Reading text from bounding boxes
+    for c in cnts:
+        (gX, gY, gW, gH) = cv2.boundingRect(c)
+        cv2.rectangle(image, (gX - 5, gY - 5),
+                    (gX + gW + 5, gY + gH + 5), (0, 0, 255), 2)
+
+        if show_steps:
+            cv2.imshow('ROI', image)
+            cv2.waitKey(0)
+
+        number += read_text_from_box(image, gX, gY, gX + gW, gY + gH)
+
+    """
+
+    number += image_to_string(image, lang='rus')
+    print(number)
+
+    return number
+
+def read_passport_mrz(image):
+
+    image = imutils.resize(image, width=600)
+
+    rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
+    sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 21))
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    tophat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKernel)
+
+    gradX = cv2.Sobel(tophat, ddepth=cv2.CV_32F, dx=1, dy=0,
+                    ksize=-1)
+    gradX = np.absolute(gradX)
+    (minVal, maxVal) = (np.min(gradX), np.max(gradX))
+    gradX = (255 * ((gradX - minVal) / (maxVal - minVal)))
+    gradX = gradX.astype("uint8")
+
+    gradX = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, rectKernel)
+    thresh = cv2.threshold(gradX, 0, 255,
+                cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, sqKernel)
+
+    p = int(image.shape[1] * 0.05)
+    thresh[:, 0:p] = 0
+    thresh[:, image.shape[1] - p:] = 0
+
+    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+    c = cnts[0]
+
+    (x, y, w, h) = cv2.boundingRect(c)
+    ar = w / float(h)
+    crWidth = w / float(gray.shape[1])
+
+    """
+    pX = int((x + w) * 0.03)
+    pY = int((y + h) * 0.03)
+    (x, y) = (x - pX, y - pY)
+    (w, h) = (w + (pX * 2), h + (pY * 2))
+    """
+
+    mrz = image[y:y + h, x:x + w].copy()
+
+    gray = cv2.cvtColor(mrz, cv2.COLOR_BGR2GRAY)
+    return image_to_string(gray, lang='eng')
 
 
 def procces_passport(full_name, top, bottom, number):
@@ -269,6 +338,7 @@ def procces_passport(full_name, top, bottom, number):
             'surname': '',
             'name': '',
             'patronymic_name': '',
+            'not_parsed_name': '',
             'birth_date': '',
             'gender': '',
             'birth_place': '',
@@ -279,37 +349,29 @@ def procces_passport(full_name, top, bottom, number):
     }
 
     # Looking for issue code
-    code = re.search(r' \d{3}.{1,3}\d{3} ', top)
+    code = re.search(r' \d{3}\.\d{3} ', top)
     if code is not None:
         passport['ocr_result']['issue_code'] = code[0]
 
     # Looking for issue authority
-
-    passport['ocr_result']['issue_authority'] = re.search(r'(.*)\d\d\d', top)[0]
+    passport['ocr_result']['issue_authority'] = re.search(r'\d{3}-\d{3}', top)[0]
 
     # Looking for issue date
-    date = re.search(r'\d{2}.{1,3}\d{2}.{1,3}\d{4}', top)
+    date = re.search(r'\d{2}\.\d{2}\.\d{4}', top)
     if date is not None:
         passport['ocr_result']['issue_date'] = date[0]
 
     # Looking for name
 
-    full_name.split()
-    name = []
-    for f in full_name.split():
-        if all(c.isalpha() for c in f):
-            name.append(f)
+    if len(full_name) == 3:
+        passport['ocr_result']['patronymic_name'] = full_name[0][-1]
+        passport['ocr_result']['name'] = full_name[0][-2]
+        passport['ocr_result']['surname'] = full_name[0][-3]
 
-    if len(name) < 3:
-        for _ in range(3 - len(name)):
-            name = [' '] + name
-
-    passport['ocr_result']['patronymic_name'] = name[-1]
-    passport['ocr_result']['name'] = name[-2]
-    passport['ocr_result']['surname'] = name[-3]
+    passport['ocr_result']['not_parsed_name'] = full_name[1]
 
     # Looking for birth date
-    date = re.search(r'\d{2}\.*\d{2}\.*\d{4}', bottom)
+    date = re.search(r'\d{2}\.\d{2}\.\d{4}', bottom)
     if date is not None:
         passport['ocr_result']['birth_date'] = date[0]
 
@@ -327,19 +389,17 @@ def procces_passport(full_name, top, bottom, number):
     genders = ['МУЖ', 'МУЖ.', 'ЖЕН', 'ЖЕН.']
     birth_place = ''
     for word in bottom.split():
-        if all(c.isalpha() or c == '.' for c in word) and word not in name \
+        if all(c.isalpha() or c == '.' for c in word) and word not in full_name[0] \
                 and word not in genders and len(word) > 2:
             birth_place += word + ' '
     passport['ocr_result']['birth_place'] = birth_place
 
     # Looking for passport series
-
-    series = re.search(r'(\d{2} {1,3}\d{2})', number)
+    series = re.search(r'(\d{2} \d{2})', number)
     if series is not None:
         passport['ocr_result']['series'] = series[0]
 
     # Looking for passport number
-
     num = re.search(r'(\d{6})', number)
     if num is not None:
         passport['ocr_result']['number'] = num[0]
