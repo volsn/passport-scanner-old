@@ -35,24 +35,7 @@ def handle_passport(image):
     :return: dict
     """
 
-    # Preprocessing
-    image = passport.rotate_passport(image)
-    image = passport.cut_passport(image)
-
-    # Cutting passport into parts and reading these
-    (h, w, _) = image.shape
-    top = image[0:int(h/2), 0:w]
-    name = image[int(h/2 + h/20):int(h-h/4),int(w/3):w]
-    bottom = image[int(h/2): h, 0:w]
-
-    number = passport.read_passport_number(image)
-    full_name = passport.find_person_name(name)
-    bottom = image_to_string(bottom, lang='rus')
-    top = image_to_string(top, lang='rus')
-
-    # Processing the text
-    responce = passport.procces_passport(full_name, top, bottom, number)
-    #responce['mrz'] = passport.read_passport_mrz(image)
+    responce = passport.analyze_passport(image.copy())
 
     return responce
 
