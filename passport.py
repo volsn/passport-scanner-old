@@ -329,15 +329,16 @@ def read_passport(image):
     ret, thresh_side = cv2.threshold(gray_side, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     number = image_to_string(thresh_side, lang='rus')
 
-    (authority, name, birth_place) = preprocess_text(authority, name, birth_place)
+    #(authority, name, birth_place) = preprocess_text(authority, name, birth_place)
 
     return (authority, name, birth_place, raw, number)
 
 
-def preprocess_text(authority, name, birth_place):
+def preprocess_text(authority, name, birth_place, name_backend):
 
     authority = re.sub(r'[^А-Я- \.\d]+', '', authority)
-    name = re.sub(r'[^а-яА-Я ]+', '', name)
+    name_backend = re.sub(r'[^А-Я ]+', '', name_backend)
+    name = re.sub(r'[^А-Я ]+', '', name)
     birth_place = re.sub(r'[^а-яА-Я- \.]+', '', birth_place)
 
 
@@ -362,7 +363,7 @@ def preprocess_text(authority, name, birth_place):
     birth_place = ''.join('{} '.format(word) for word in birth_place)
     name = ''.join('{} '.format(word) for word in name)
 
-    return (authority, name, birth_place)
+    return (authority, name, birth_place, name_backend)
 
 
 def read_text(image):
@@ -380,7 +381,82 @@ def read_text(image):
     return (bottom_image, top_processed, authority, name, birth_place, raw, number)
 
 
-def parse_passport(authority, name, birth_place, raw, number):
+def parse_name(name, backend, raw):
+
+    #parse namev
+    result1 = {"surname":'',"name":'',"patronymic_name":''}
+    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', name, flags=re.I)
+    if full_name is not None:
+
+        result1['patronymic_name'] = full_name[2]
+        full_name = full_name[0].split()
+    else:
+        full_name = name.split()
+
+    for word in full_name:
+        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
+            result1['surname'] = word
+
+    for word in full_name:
+        if word != result1['surname'] and word != result1['patronymic_name']:
+            result1['name'] = word
+
+
+    # parse backend
+    result2 = {"surname":'',"name":'',"patronymic_name":''}
+    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', backend, flags=re.I)
+    if full_name is not None:
+
+        result2['patronymic_name'] = full_name[2]
+        full_name = full_name[0].split()
+    else:
+        full_name = backend.split()
+
+    for word in full_name:
+        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
+            result2['surname'] = word
+
+    for word in full_name:
+        if word != result1['surname'] and word != result1['patronymic_name']:
+            result2['name'] = word
+
+    #parse raw
+    result3 = {"surname":'',"name":'',"patronymic_name":''}
+    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', raw, flags=re.I)
+    if full_name is not None:
+
+        result3['patronymic_name'] = full_name[2]
+        full_name = full_name[0].split()
+    else:
+        full_name = name.split()
+
+    for word in full_name:
+        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
+            result3['surname'] = word
+
+    for word in full_name:
+        if word != result1['surname'] and word != result1['patronymic_name']:
+            result3['name'] = word
+
+    print(raw)
+
+    if result1['surname'] is None and result2['surname'] is not None:
+        result1['surname'] = result2['surname']
+
+    if result1['name'] is None and result2['name'] is not None:
+        result1['name'] = result2['name']
+
+
+    if result1['surname'] is None and result3['surname'] is not None:
+        result1['surname'] = result3['surname']
+
+    if result1['name'] is None and result3['name'] is not None:
+        result1['name'] = result3['name']
+
+    return result1
+
+
+def parse_passport(authority, name, birth_place, raw, number, name_backend):
 
     passport = {
         'ocr_result': {
@@ -401,6 +477,23 @@ def parse_passport(authority, name, birth_place, raw, number):
         'FIO': '',
     }
 
+    # Looking for dates of issue and birth
+    date_zone1 = authority.replace(' ', '')
+    date1 = re.findall(r'(\d{2}[^\d]{1,3}\d{2}[^\d]{1,3}\d{4})', date_zone1)
+    if date1 != []:
+        passport['ocr_result']['issue_date'] = date1[0]
+
+    date_zone2 = raw.replace(' ', '')
+    date2 = re.findall(r'(\d{2}[^\d]{1,3}\d{2}[^\d]{1,3}\d{4})', date_zone2)
+    if date2 != []:
+        passport['ocr_result']['birth_date'] = date2[0]
+
+    # Looking for issue code
+    code = re.search(r'\d{3}-\d{3}', authority)
+    if code is not None:
+        passport['ocr_result']['issue_code'] = code[0]
+
+    #authority = re.sub(r'[^А-Я- \.]+', '', authority)
 
     AUTHORITIES = ['отделом', 'УФМС', 'МФЦ', 'ГОМ', 'УВД']
     issued = None
@@ -426,35 +519,11 @@ def parse_passport(authority, name, birth_place, raw, number):
     passport['ocr_result']['birth_place'] = born
 
 
-    full_name = re.search(r'(.* (.*(ВИЧ|ВНА)))', name, flags=re.I)
-    if full_name is not None:
+    FIO = parse_name(name, name_backend, raw)
+    passport['ocr_result']['patronymic_name'] = FIO['patronymic_name']
+    passport['ocr_result']['name'] = FIO['name']
+    passport['ocr_result']['surname'] = FIO['surname']
 
-        passport['ocr_result']['patronymic_name'] = full_name[2]
-        full_name = full_name[0].split()
-
-        name = []
-        for n in full_name:
-            if all(c.isalpha() for c in n) and len(n) >= 3:
-                name.append(n)
-
-    if len(name) > 1:
-        passport['ocr_result']['surname'] = name[0]
-        passport['ocr_result']['name'] = name[1]
-    # Looking for dates of issue and birth
-    date_zone1 = authority.replace(' ', '')
-    date1 = re.findall(r'(\d{2}\.\d{2}\.\d{4})', date_zone1)
-    if date1 != []:
-        passport['ocr_result']['issue_date'] = date1[0]
-
-    date_zone2 = raw.replace(' ', '')
-    date2 = re.findall(r'(\d{2}\.\d{2}\.\d{4})', date_zone2)
-    if date2 != []:
-        passport['ocr_result']['birth_date'] = date2[0]
-
-    # Looking for issue code
-    code = re.search(r'\d{3}-\d{3}', authority)
-    if code is not None:
-        passport['ocr_result']['issue_code'] = code[0]
 
     # Looking for gender
     if passport['ocr_result']['patronymic_name'].endswith('ВИЧ') \
@@ -474,10 +543,10 @@ def parse_passport(authority, name, birth_place, raw, number):
     if num is not None:
         passport['ocr_result']['number'] = num[0]
 
-    passport['text'] = raw
-    passport['FIO'] = name
+    passport['text'] = authority + name + birth_place + raw + number
 
     return passport
+
 
 def analyze_passport(image):
 
@@ -486,34 +555,29 @@ def analyze_passport(image):
     orig = rotate_passport(orig)
     passport = passport_border(orig)
 
-    result = {'1':None,'2':None}
+    (authority, name_backend, birth_place, raw, number) = read_passport(passport)
+    #instance1 = parse_passport(authority, name, birth_place, raw, number)
 
-    (authority, name, birth_place, raw, number) = read_passport(passport)
-    instance1 = parse_passport(authority, name, birth_place, raw, number)
-
-    result['1'] = instance1
+    #result['1'] = instance1
 
     (h,w) = passport.shape[:2]
 
-    name = passport[h//2:h//4*3,w//3:w]
+    name = passport[h//2:h,w//3:w]
     text_name = locate_text(name).replace('\n', ' ')
 
-    top = passport[0:h//2,0:w]
+    """top = passport[0:h//2,0:w]
     text_top = locate_text(top).replace('\n', ' ')
 
     birth_place = passport[h//4*3:h,0:w]
-    text_birth_place = locate_text(birth_place).replace('\n', ' ')
+    text_birth_place = locate_text(birth_place).replace('\n', ' ')"""
 
-    try:
-        raw = passport[h//2:h,0:w]
-        text_raw = locate_text(raw).replace('\n', ' ')
+    """raw = passport[h//2:h,0:w]
+    text_raw = locate_text(raw).replace('\n', ' ')"""
 
-    except:
-        text_raw = text_name + text_birth_place
+    (authority, text_name, birth_place, name_backend) = preprocess_text(authority, text_name, birth_place, name_backend)
+    print(name_backend)
+    print(text_name)
 
-    (authority, name, birth_place) = preprocess_text(text_top, text_name, text_birth_place)
-    instance2 = parse_passport(text_top, text_name, text_birth_place, text_raw, number)
-
-    result['2'] = instance2
+    result = parse_passport(authority, text_name, birth_place, raw, number, name_backend)
 
     return result
