@@ -165,11 +165,70 @@ def cut_passport(image):
     """
     return masked
 
+def read_name(mask, bottom):
+
+    (H,W) = bottom.shape[:2]
+
+    img_cnt, cnts, hierarchy = cv2.findContours(mask.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    orig = bottom.copy()
+
+    text = []
+    masked = np.zeros(orig.shape[:2],dtype=np.uint8)
+    if len(cnts) >= 3:
+
+        (cnts, boundingBoxes) = sort_contours(cnts, method='top-to-bottom')
+
+        ROIs = []
+        for j, (cnt, box)in enumerate(zip(cnts, boundingBoxes)):
+
+            temp_mask = np.zeros(mask.shape[:2],dtype=np.uint8)
+            temp_mask = cv2.drawContours(temp_mask, [cnt], -1, (255,255,255), -1)
+
+            (x, y, w, h) = box
+
+            if x >= 0.1 * W:
+
+                """x -= int(0.1 * w)
+                w += int(0.1 * w) * 2"""
+                x -= 100
+                w += 200
+                y -= int(0.5 * h)
+                h += int(0.5 * h) * 2
+
+                temp_mask[y:y+h,x:x+w] = 255
+
+                #cv2.rectangle(orig, (x, y), (x+w, y+h), (0, 255, 0), 2)
+
+                roi = get_segment_crop(orig, orig, mask=temp_mask)
+                ROIs.append(roi)
+
+                """cv2.imwrite('Mask/{}.png'.format(name), orig)
+                cv2.imwrite('ROIs/{}_{}.png'.format(name,j),roi)
+                """
+
+                roi_text = read_text_from_blob(roi)
+
+                text.append(roi_text + '\n')
+
+    #print(text)
+    result = []
+    for word in text[:3]:
+        word = word.replace('\n', ' ')
+        word = re.sub(r'[^а-яА-Я ]+', '', word)
+        potentials = word.split()
+        if potentials != []:
+            result.append(sorted(potentials, key=len)[-1])
+
+    return result
 
 def locate_text(image):
 
     orig = image.copy()
     (H, W) = image.shape[:2]
+
+    gray = cv2.cvtColor(orig.copy(), cv2.COLOR_BGR2GRAY)
+    ret, thresh = cv2.threshold(gray,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    raw_text = image_to_string(thresh, lang='rus')
 
     (newW, newH) = (320, 320)
     rW = W / float(newW)
@@ -182,7 +241,7 @@ def locate_text(image):
         "feature_fusion/Conv_7/Sigmoid",
         "feature_fusion/concat_3"]
 
-    net = cv2.dnn.readNet('frozen_east_text_detection.pb')
+    net = cv2.dnn.readNet('EAST.pb')
 
     blob = cv2.dnn.blobFromImage(image, 1.0, (W, H),
                 (123.68, 116.78, 103.94), swapRB=True, crop=False)
@@ -255,298 +314,43 @@ def locate_text(image):
         w = endX - startX
         h = endY - startY
 
-        if w > 70 and h > 30:
+        #if w > 50 and h > 15:
 
-            endX += 100
-            startX -= 100
-            startY -= 5
-            endY += 5
+        endX += 25
+        startX -= 25
+        """startY -= 5
+        endY += 5"""
 
-            #cv2.rectangle(orig, (startX, startY), (endX, endY), (0, 255, 0), 2)
+        mask[startY:endY,startX:endX] = 255
+        ROIs.append(orig[startY:endY,startX:endX].copy())
 
-            mask[startY:endY,startX:endX] = 255
-            ROIs.append(orig[startY:endY,startX:endX].copy())
+    located = cv2.bitwise_and(orig, orig, mask=mask)
 
-    img_cnt, cnts, hierarchy = cv2.findContours(mask.copy(), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    return mask, located
 
-    text = ''
-    if len(cnts) > 0:
+def read_text_from_blob(image):
 
-        (cnts, boundingBoxes) = sort_contours(cnts, method='top-to-bottom')
+    roi = image.copy()
 
-        ROIs = []
-        for cnt, box in zip(cnts, boundingBoxes):
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.medianBlur(gray,3)
+    ret, thresh = cv2.threshold(blurred,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    roi_text = image_to_string(thresh, lang='rus')
 
-            temp_mask = np.zeros(mask.shape[:2],dtype=np.uint8)
-            #temp_mask = cv2.drawContours(temp_mask, [cnt], -1, (255,255,255), -1)
+    if roi_text == '':
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray,(5,5),0)
+        ret, thresh = cv2.threshold(blurred,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        roi_text = image_to_string(thresh, lang='rus')
 
-            (x, y, w, h) = box
-            y -= 15
-            h += 30
+    if roi_text == '':
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray,(1,1),0)
+        dilated = cv2.dilate(blurred, (3,3), iterations=1)
+        ret, thresh = cv2.threshold(dilated,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        roi_text = image_to_string(thresh, lang='rus')
 
-            temp_mask[y:y+h,x:x+w] = 255
-
-
-            roi = get_segment_crop(orig, orig, mask=temp_mask)
-            ROIs.append(roi)
-
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            ret, thresh = cv2.threshold(gray,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            roi_text = image_to_string(thresh, lang='rus')
-
-            text += roi_text + '\n'
-
-        masked = cv2.bitwise_and(orig,orig,mask=mask)
-    return text
-
-
-def read_passport(image):
-
-    image = image.copy()
-    (h,w) = image.shape[:2]
-
-    authority = image[0:h//2, 0:w]
-    name = image[h//2:h//4*3, w//3:w]
-    birth_place = image[h//4*3:h, 0:w]
-
-    gray_authority= cv2.cvtColor(authority, cv2.COLOR_BGR2GRAY)
-    gray_name = cv2.cvtColor(name, cv2.COLOR_BGR2GRAY)
-    gray_birth_place = cv2.cvtColor(birth_place, cv2.COLOR_BGR2GRAY)
-
-    ret, thresh_authority = cv2.threshold(gray_authority, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    ret, thresh_name = cv2.threshold(gray_name, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    ret, thresh_birth_place = cv2.threshold(gray_birth_place, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-
-    authority = image_to_string(authority, lang='rus').replace('\n', ' ')
-    name = image_to_string(name, lang='rus').replace('\n', ' ')
-    birth_place = image_to_string(birth_place, lang='rus').replace('\n', ' ')
-    raw = image_to_string(image, lang='rus').replace('\n', ' ')
-
-    side = imutils.rotate_bound(image, angle=-90)
-    (h, w) = side.shape[:2]
-    side = side[0:h//10, 0:w]
-    gray_side = cv2.cvtColor(side, cv2.COLOR_BGR2GRAY)
-    ret, thresh_side = cv2.threshold(gray_side, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    number = image_to_string(thresh_side, lang='rus')
-
-    #(authority, name, birth_place) = preprocess_text(authority, name, birth_place)
-
-    return (authority, name, birth_place, raw, number)
-
-
-def preprocess_text(authority, name, birth_place, name_backend):
-
-    authority = re.sub(r'[^А-Я- \.\d]+', '', authority)
-    name_backend = re.sub(r'[^А-Я ]+', '', name_backend)
-    name = re.sub(r'[^А-Я ]+', '', name)
-    birth_place = re.sub(r'[^а-яА-Я- \.]+', '', birth_place)
-
-
-    ALLOLEW_SMALL_STRINGS_AUTHORITIES = ['и', 'в']
-    authority = authority.split()
-    for i, word in enumerate(authority):
-        if len(word) <= 2 and word.lower() not in ALLOLEW_SMALL_STRINGS_AUTHORITIES:
-            del(authority[i])
-
-    name = name.split()
-    for i, word in enumerate(name):
-        if len(word) <= 2:
-            del(name[i])
-
-    ALLOLEW_SMALL_STRINGS_BIRTH_PLACE = []
-    birth_place = birth_place.split()
-    for i, word in enumerate(birth_place):
-        if len(word) <= 2 and word.lower() not in ALLOLEW_SMALL_STRINGS_BIRTH_PLACE:
-            del(birth_place[i])
-
-    authority = ''.join('{} '.format(word) for word in authority)
-    birth_place = ''.join('{} '.format(word) for word in birth_place)
-    name = ''.join('{} '.format(word) for word in name)
-
-    return (authority, name, birth_place, name_backend)
-
-
-def read_text(image):
-
-    image = image.copy()
-    (h, w) = image.shape[:2]
-
-    bottom_image = image[h//2:h,w//3:w]
-    bottom_processed = locate_text(bottom_image)
-    top_image = image[0:h//2,0:w]
-    top_processed = locate_text(top_image)
-
-    (authority, name, birth_place, raw, number) = read_passport(image)
-
-    return (bottom_image, top_processed, authority, name, birth_place, raw, number)
-
-
-def parse_name(name, backend, raw):
-
-    #parse namev
-    result1 = {"surname":'',"name":'',"patronymic_name":''}
-    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', name, flags=re.I)
-    if full_name is not None:
-
-        result1['patronymic_name'] = full_name[2]
-        full_name = full_name[0].split()
-    else:
-        full_name = name.split()
-
-    for word in full_name:
-        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
-            result1['surname'] = word
-
-    for word in full_name:
-        if word != result1['surname'] and word != result1['patronymic_name']:
-            result1['name'] = word
-
-
-    # parse backend
-    result2 = {"surname":'',"name":'',"patronymic_name":''}
-    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', backend, flags=re.I)
-    if full_name is not None:
-
-        result2['patronymic_name'] = full_name[2]
-        full_name = full_name[0].split()
-    else:
-        full_name = backend.split()
-
-    for word in full_name:
-        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
-            result2['surname'] = word
-
-    for word in full_name:
-        if word != result1['surname'] and word != result1['patronymic_name']:
-            result2['name'] = word
-
-    #parse raw
-    result3 = {"surname":'',"name":'',"patronymic_name":''}
-    full_name = re.search(r'(.* (.*(ВИЧ|ВНА|ВНЯ)))', raw, flags=re.I)
-    if full_name is not None:
-
-        result3['patronymic_name'] = full_name[2]
-        full_name = full_name[0].split()
-    else:
-        full_name = name.split()
-
-    for word in full_name:
-        if re.match(r'[А-Я]{2,}(ОВ|ОВА|ЕВ|ЕВА|ЁВ|ЁВА|ИХ|ЫХ|ИЙ|ЫЙ|АЯ|КО|АЙ|ИК|УК|ЮК|ЕЦ|ЛО|ИН|ИНА|УН)$', word):
-            result3['surname'] = word
-
-    for word in full_name:
-        if word != result1['surname'] and word != result1['patronymic_name']:
-            result3['name'] = word
-
-    print(raw)
-
-    if result1['surname'] is None and result2['surname'] is not None:
-        result1['surname'] = result2['surname']
-
-    if result1['name'] is None and result2['name'] is not None:
-        result1['name'] = result2['name']
-
-
-    if result1['surname'] is None and result3['surname'] is not None:
-        result1['surname'] = result3['surname']
-
-    if result1['name'] is None and result3['name'] is not None:
-        result1['name'] = result3['name']
-
-    return result1
-
-
-def parse_passport(authority, name, birth_place, raw, number, name_backend):
-
-    passport = {
-        'ocr_result': {
-            'doc_type': 'passport',
-            'issue_authority': '',
-            'issue_code': '',
-            'issue_date': '',
-            'surname': '',
-            'name': '',
-            'patronymic_name': '',
-            'birth_date': '',
-            'gender': '',
-            'birth_place': '',
-            'series': '',
-            'number': '',
-        },
-        'text': '',
-        'FIO': '',
-    }
-
-    # Looking for dates of issue and birth
-    date_zone1 = authority.replace(' ', '')
-    date1 = re.findall(r'(\d{2}[^\d]{1,3}\d{2}[^\d]{1,3}\d{4})', date_zone1)
-    if date1 != []:
-        passport['ocr_result']['issue_date'] = date1[0]
-
-    date_zone2 = raw.replace(' ', '')
-    date2 = re.findall(r'(\d{2}[^\d]{1,3}\d{2}[^\d]{1,3}\d{4})', date_zone2)
-    if date2 != []:
-        passport['ocr_result']['birth_date'] = date2[0]
-
-    # Looking for issue code
-    code = re.search(r'\d{3}-\d{3}', authority)
-    if code is not None:
-        passport['ocr_result']['issue_code'] = code[0]
-
-    #authority = re.sub(r'[^А-Я- \.]+', '', authority)
-
-    AUTHORITIES = ['отделом', 'УФМС', 'МФЦ', 'ГОМ', 'УВД']
-    issued = None
-    for auth in AUTHORITIES:
-        if re.search(auth, authority, flags=re.I) is not None:
-            issued = re.findall(r'({}.*)'.format(auth), authority, flags=re.I)[0]
-            break
-
-    if issued is None:
-        issued = authority
-    passport['ocr_result']['issue_authority'] = issued
-
-
-    LOCALITIES = ['пос', 'гор', r'с\.']
-    born = None
-    for local in LOCALITIES:
-        if re.search(local, birth_place, flags=re.I) is not None:
-            born = re.findall(r'({}.*)'.format(local), birth_place, flags=re.I)[0]
-            break
-
-    if born is None:
-        born = birth_place
-    passport['ocr_result']['birth_place'] = born
-
-
-    FIO = parse_name(name, name_backend, raw)
-    passport['ocr_result']['patronymic_name'] = FIO['patronymic_name']
-    passport['ocr_result']['name'] = FIO['name']
-    passport['ocr_result']['surname'] = FIO['surname']
-
-
-    # Looking for gender
-    if passport['ocr_result']['patronymic_name'].endswith('ВИЧ') \
-                        or re.search(r'(МУЖ|МУЖ.) ', raw) is not None:
-        passport['ocr_result']['gender'] = 'male'
-    elif passport['ocr_result']['patronymic_name'].endswith('ВНА') \
-                        or re.search(r'(ЖЕН|ЖЕН.) ', raw) is not None:
-        passport['ocr_result']['gender'] = 'female'
-
-    # Looking for passport series
-    series = re.search(r'(\d{2} \d{2})', number)
-    if series is not None:
-        passport['ocr_result']['series'] = series[0]
-
-    # Looking for passport number
-    num = re.search(r'(\d{6})', number)
-    if num is not None:
-        passport['ocr_result']['number'] = num[0]
-
-    passport['text'] = authority + name + birth_place + raw + number
-
-    return passport
-
+    return roi_text
 
 def analyze_passport(image):
 
@@ -555,29 +359,28 @@ def analyze_passport(image):
     orig = rotate_passport(orig)
     passport = passport_border(orig)
 
-    (authority, name_backend, birth_place, raw, number) = read_passport(passport)
-    #instance1 = parse_passport(authority, name, birth_place, raw, number)
+    (H,W) = passport.shape[:2]
 
-    #result['1'] = instance1
+    bottom = passport[H//2:H,W//3:W]
+    mask,located = locate_text(bottom)
 
-    (h,w) = passport.shape[:2]
+    pasport = {'name': '', 'surname': '', 'patronymic_name': '', 'authority': ''}
 
-    name = passport[h//2:h,w//3:w]
-    text_name = locate_text(name).replace('\n', ' ')
+    full_name = read_name(mask, bottom)
+    """print(full_name)
+    if len(full_name) == 3:
+        passport['surname'] = full_name[0]
+        passport['name'] = full_name[1]
+        passport['patronymic_name'] = full_name[2]
+    else:
+        passport['FIO'] = full_name"""
 
-    """top = passport[0:h//2,0:w]
-    text_top = locate_text(top).replace('\n', ' ')
+    return full_name
 
-    birth_place = passport[h//4*3:h,0:w]
-    text_birth_place = locate_text(birth_place).replace('\n', ' ')"""
+    """
+    # TODO Read Authority
+    """
 
-    """raw = passport[h//2:h,0:w]
-    text_raw = locate_text(raw).replace('\n', ' ')"""
-
-    (authority, text_name, birth_place, name_backend) = preprocess_text(authority, text_name, birth_place, name_backend)
-    print(name_backend)
-    print(text_name)
-
-    result = parse_passport(authority, text_name, birth_place, raw, number, name_backend)
-
-    return result
+    """
+    # TODO Parse Numerical Data
+    """
