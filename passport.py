@@ -9,7 +9,7 @@ import numpy as np
 from pytesseract import image_to_string
 
 
-def passport_border(image, mode='reading'):
+def passport_border(image):
 
     # Initializing cascade
     #image = cv2.imread(filename)
@@ -26,44 +26,26 @@ def passport_border(image, mode='reading'):
 
         (H, W, _) = image.shape
 
-        if mode == 'reading':
-            # Mode designed to find passport border
-            # as acurate as possible in order to read it
+        if y + 3 * h > H:
+            endY = H
+        else:
+            endY = y + 3 * h
 
-            if y - int(6 * h) < 0:
-                startY = 0
-            else:
-                startY = y - int(6 * h)
+        if x - w < 0:
+            startX = 0
+        else:
+            startX = x - w
 
-            if y + 3 * h > H:
-                endY = H
-            else:
-                endY = y + 3 * h
+        startY = 0
+        endX = W
 
-            if x - w < 0:
-                startX = 0
-            else:
-                startX = x - w
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[startY:endY, startX:endX] = 255
 
-            if x + 6 * w > W:
-                endX = W
-            else:
-                endX = x + 6 * w
+        masked = cv2.bitwise_and(image, image, mask=mask)
+        masked = get_segment_crop(image, mask=mask)
 
-            mask = np.zeros((H, W), dtype=np.uint8)
-            mask[startY:endY, startX:endX] = 255
-
-            masked = cv2.bitwise_and(image, image, mask=mask)
-            masked = get_segment_crop(image, mask=mask)
-
-            """
-                cv2.imwrite(os.path.join('output', output + '.png'), masked)
-
-            else:
-                cv2.imwrite(os.path.join('output', output + '.png'), image)
-            """
-
-            return masked
+        return masked
 
     else:
         return image
@@ -93,13 +75,8 @@ def rotate_passport(passport):
         gray = imutils.rotate_bound(gray, 90)
         rotates += 1
 
-    (h, w, _) = passport.shape
-    if w > h:
-        passport = rotate_bound(passport,angle=-90)
-
-    print('Falsed')
     # Return false if the given picture is not a passport
-    return passport
+    return None
 
 
 def get_segment_crop(img,tol=0, mask=None):
@@ -426,14 +403,14 @@ def read_side(image):
 
     (h,w) = image.shape[:2]
 
-    side = image[:h//10,:]
+    side = image[:h//5,:]
 
     gray = cv2.cvtColor(side, cv2.COLOR_BGR2GRAY)
     blurred = cv2.medianBlur(gray, 3)
     eroded = cv2.erode(blurred, (3,3), iterations=1)
     dilated = cv2.dilate(eroded, (3,3), iterations=1)
     ret, thresh = cv2.threshold(dilated,0,255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-    text = image_to_string(thresh, lang='rus').replace('\n', ' ')
+    text = image_to_string(thresh)
 
     output = {'series': '', 'number': ''}
 
@@ -448,17 +425,137 @@ def read_side(image):
     return output
 
 
+def locate_MRZ(image):
+
+    image = image.copy()
+    (H,W) = image.shape[:2]
+    orig = image.copy()
+
+    image = imutils.resize(image, height=600)
+    (h,w) = image.shape[:2]
+
+    kX = W / w
+    kY = H / h
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
+    sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 21))
+
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKernel)
+
+    gradX = cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
+    gradX = np.absolute(gradX)
+    (minVal, maxVal) = (np.min(gradX), np.max(gradX))
+    gradX = (255 * ((gradX - minVal) / (maxVal - minVal))).astype("uint8")
+
+    gradX = cv2.morphologyEx(gradX, cv2.MORPH_CLOSE, rectKernel)
+    thresh = cv2.threshold(gradX, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
+
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, sqKernel)
+    thresh = cv2.erode(thresh, None, iterations=4)
+
+    p = int(image.shape[1] * 0.05)
+    thresh[:, 0:p] = 0
+    thresh[:, image.shape[1] - p:] = 0
+
+    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+
+    for c in cnts:
+
+        (x, y, w, h) = cv2.boundingRect(c)
+        ar = w / float(h)
+        crWidth = w / float(gray.shape[1])
+
+        if ar > 5 and crWidth > 0.75:
+
+            pX = int((x + w) * 0.03)
+            pY = int((y + h) * 0.03)
+            (x, y) = (x - pX, y - pY)
+            (w, h) = (w + (pX * 2), h + (pY * 2))
+
+            roi = image[y:y + h, x:x + w].copy()
+            roi = orig[int(y*kY):int(y*kY + h*kY), int(x*kX):int((x+w)*kX)].copy()
+
+            return roi
+
+
+def parse_mrz(image):
+
+    mrz = locate_MRZ(image)
+
+    if mrz is None:
+        return None
+
+    gray = cv2.cvtColor(mrz, cv2.COLOR_BGR2GRAY)
+
+    text = image_to_string(gray)
+
+    (top, bottom) = text.split('\n')
+    top = top.replace(' ', '')
+    bottom = bottom.replace(' ', '')
+
+    words = [word for word in top.split('<') if len(word) >= 3]
+    if len(words) >= 3:
+        words = words[:3]
+        words[0] = words[0][5:]
+
+    translit = {"L":"Л","O":"О","G":"Г","I":"И","N":"Н","V":"В","A":"А","E":"Е","R":"Р",\
+                "K":"К","S":"С","8":"Я","7":"Ю","3":"Ч","M":"М","Q":"Й","T":"Т","Z":"З",\
+                "Y":"у","F":"Ф","D":"Д","B":"Б",}
+
+    mrz_result = {'surname': '', 'name': '', 'patronymic': '', \
+                'birth_date': '', 'issue_date': '', 'issue_code': '', 'number': '', 'series': '', 'sex': ''}
+
+    mrz_result['surname'] = ''.join([translit[letter] for letter in words[0]])
+    mrz_result['name'] = ''.join([translit[letter] for letter in words[1]])
+    mrz_result['patronymic'] = ''.join([translit[letter] for letter in words[2]])
+
+    mrz_result['birth_date'] = '{}.{}.19{}'.format(bottom[13:19][4:6], bottom[13:19][2:4], bottom[13:19][0:2])
+    mrz_result['sex'] = 'male' if 'M' in bottom else 'female'
+
+    mrz_result['issue_date'] = '{}.{}.20{}'.format(bottom[-15:-9][4:6], bottom[-15:-9][2:4], bottom[-15:-9][0:2])
+    mrz_result['issue_code'] = '{}-{}'.format(bottom[-9:-3][0:3], bottom[-9:-3][3:6])
+
+    mrz_result['series'] = bottom[:2]
+    mrz_result['number'] = bottom[3:9]
+
+    return mrz_result
+
+
 def analyze_passport(passport):
 
+
     image = passport.copy()
+    image = rotate_passport(image)
+
+    if image is None:
+        return {'Error': 'Not a Passport'}
+
+    image = cut_passport(image)
+    image = passport_border(image)
+
+
     (h,w) = image.shape[:2]
 
     top = image[0:h//2,:]
-    boxes, (rW, rH) = locate_text(top)
+    try:
+        boxes, (rW, rH) = locate_text(top)
+    except:
+        return {'Error': 'Could not locate text boxes'}
+
     top = authority_text_boxes(top, boxes, rW, rH)
 
     bottom = image[h//2:h,w//3:w]
-    boxes, (rW, rH) = locate_text(bottom)
+    try:
+        boxes, (rW, rH) = locate_text(bottom)
+    except:
+        return {'Error': 'Could not locate text boxes'}
+
     bottom = name_text_boxes(bottom, boxes, rW, rH)
 
     image_cut = {'top': [], 'surname': np.ones((1,1), dtype=np.uint8), 'name': np.ones((1,1), dtype=np.uint8), \
@@ -499,7 +596,7 @@ def analyze_passport(passport):
         image_cut['birth_date'] = bottom[3]
         ocr_result['birth_date'] = read_text(bottom[3], type_='number')
 
-        for line in bottom[4:]:
+        for line in bottom[3:]:
             image_cut['birth_place'].append(line)
             #print(read_text(line, type_='birth') + ' ')
             ocr_result['birth_place'] += read_text(line, type_='birth') + ' '
@@ -507,5 +604,13 @@ def analyze_passport(passport):
     ocr_result.update(read_side(image))
 
     result = {'ocr_result': ocr_result, 'cut': image_cut}
+
+    try:
+        mrz = parse_mrz(image)
+
+        if mrz is not None:
+            result['ocr_result']['mrz'] = mrz
+    except:
+        result['ocr_result']['mrz'] = 'Error decoding MRZ'
 
     return result['ocr_result']
